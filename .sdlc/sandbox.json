@@ -1,0 +1,13 @@
+{
+  "image": "python:3.14-bookworm",
+  "setup": "pip install uv && cd backend && uv sync",
+  "verify": [
+    "cd backend && uv run pytest tests/"
+  ],
+  "preview": {
+    "cmd": "cd backend && uv run fastapi dev app/main.py --host 0.0.0.0 --port 8000",
+    "port": 8000
+  },
+  "shell": "/bin/bash",
+  "depsStrategy": "none"
+}

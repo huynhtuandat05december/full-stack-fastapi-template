@@ -1,7 +1,7 @@
 import uuid
 from typing import Any
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from app.core.security import get_password_hash, verify_password
 from app.models import Item, ItemCreate, User, UserCreate, UserUpdate
@@ -32,9 +32,24 @@ def update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:
 
 
 def get_user_by_email(*, session: Session, email: str) -> User | None:
-    statement = select(User).where(User.email == email)
+    statement = (
+        select(User)
+        .where(User.email == email)
+        .where(col(User.deleted_at).is_(None))
+    )
     session_user = session.exec(statement).first()
     return session_user
+
+
+def email_is_taken(*, session: Session, email: str) -> bool:
+    """Check whether an email is already used, including by soft-deleted users.
+
+    Soft-deleted users still occupy their email (the unique DB constraint remains),
+    so this is used for the create/register uniqueness guard. Per the soft-delete
+    policy, a soft-deleted email cannot be re-registered.
+    """
+    statement = select(User).where(User.email == email)
+    return session.exec(statement).first() is not None
 
 
 # Dummy hash to use for timing attack prevention when user is not found

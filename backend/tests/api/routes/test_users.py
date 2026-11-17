@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 from app import crud
 from app.core.config import settings
 from app.core.security import verify_password
-from app.models import User, UserCreate
+from app.models import Item, User, UserCreate
 from tests.utils.user import create_random_user
 from tests.utils.utils import random_email, random_lower_string
 
@@ -440,12 +440,15 @@ def test_delete_user_me(client: TestClient, db: Session) -> None:
     assert r.status_code == 200
     deleted_user = r.json()
     assert deleted_user["message"] == "User deleted successfully"
+    # Soft delete: the row persists with deleted_at set.
+    db.expire_all()
     result = db.exec(select(User).where(User.id == user_id)).first()
-    assert result is None
+    assert result is not None
+    assert result.deleted_at is not None
 
-    user_query = select(User).where(User.id == user_id)
-    user_db = db.execute(user_query).first()
-    assert user_db is None
+    # The token for the soft-deleted user no longer resolves.
+    me = client.get(f"{settings.API_V1_STR}/users/me", headers=headers)
+    assert me.status_code == 404
 
 
 def test_delete_user_me_as_superuser(
@@ -475,8 +478,76 @@ def test_delete_user_super_user(
     assert r.status_code == 200
     deleted_user = r.json()
     assert deleted_user["message"] == "User deleted successfully"
+    # Soft delete: the row persists with deleted_at set.
+    db.expire_all()
     result = db.exec(select(User).where(User.id == user_id)).first()
-    assert result is None
+    assert result is not None
+    assert result.deleted_at is not None
+
+    # Absent from the users list endpoint.
+    list_response = client.get(
+        f"{settings.API_V1_STR}/users/",
+        headers=superuser_token_headers,
+    )
+    assert list_response.status_code == 200
+    ids = [row["id"] for row in list_response.json()["data"]]
+    assert str(user_id) not in ids
+
+
+def test_delete_user_cascades_soft_delete_items(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    username = random_email()
+    password = random_lower_string()
+    user_in = UserCreate(email=username, password=password)
+    user = crud.create_user(session=db, user_create=user_in)
+
+    item1 = Item(title="first", owner_id=user.id)
+    item2 = Item(title="second", owner_id=user.id)
+    db.add(item1)
+    db.add(item2)
+    db.commit()
+    db.refresh(item1)
+    db.refresh(item2)
+    item_ids = [item1.id, item2.id]
+
+    r = client.delete(
+        f"{settings.API_V1_STR}/users/{user.id}",
+        headers=superuser_token_headers,
+    )
+    assert r.status_code == 200
+
+    db.expire_all()
+    for item_id in item_ids:
+        db_item = db.get(Item, item_id)
+        assert db_item is not None
+        assert db_item.deleted_at is not None
+
+
+def test_soft_deleted_user_cannot_authenticate(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    username = random_email()
+    password = random_lower_string()
+    user_in = UserCreate(email=username, password=password)
+    user = crud.create_user(session=db, user_create=user_in)
+
+    r = client.delete(
+        f"{settings.API_V1_STR}/users/{user.id}",
+        headers=superuser_token_headers,
+    )
+    assert r.status_code == 200
+
+    db.expire_all()
+    # authenticate() must reject a soft-deleted user.
+    assert crud.authenticate(session=db, email=username, password=password) is None
+
+    # Login endpoint returns an error for a soft-deleted user.
+    login = client.post(
+        f"{settings.API_V1_STR}/login/access-token",
+        data={"username": username, "password": password},
+    )
+    assert login.status_code == 400
 
 
 def test_delete_user_not_found(
