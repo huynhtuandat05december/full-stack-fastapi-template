@@ -41,14 +41,22 @@ def get_user_by_email(*, session: Session, email: str) -> User | None:
     return session_user
 
 
-def email_is_taken(*, session: Session, email: str) -> bool:
+def email_is_taken(
+    *, session: Session, email: str, exclude_user_id: uuid.UUID | None = None
+) -> bool:
     """Check whether an email is already used, including by soft-deleted users.
 
-    Soft-deleted users still occupy their email (the unique DB constraint remains),
-    so this is used for the create/register uniqueness guard. Per the soft-delete
-    policy, a soft-deleted email cannot be re-registered.
+    Soft-deleted users still occupy their email (the unique DB constraint remains
+    and is not partial), so this is used for every uniqueness guard — create,
+    register, and update. Per the soft-delete policy, a soft-deleted email cannot
+    be re-registered or reused.
+
+    ``exclude_user_id`` lets update paths ignore the row being edited so a user
+    keeping their own email is not treated as a collision.
     """
     statement = select(User).where(User.email == email)
+    if exclude_user_id is not None:
+        statement = statement.where(col(User.id) != exclude_user_id)
     return session.exec(statement).first() is not None
 
 

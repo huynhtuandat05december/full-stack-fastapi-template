@@ -94,12 +94,12 @@ def update_user_me(
     Update own user.
     """
 
-    if user_in.email:
-        existing_user = crud.get_user_by_email(session=session, email=user_in.email)
-        if existing_user and existing_user.id != current_user.id:
-            raise HTTPException(
-                status_code=409, detail="User with this email already exists"
-            )
+    if user_in.email and crud.email_is_taken(
+        session=session, email=user_in.email, exclude_user_id=current_user.id
+    ):
+        raise HTTPException(
+            status_code=409, detail="User with this email already exists"
+        )
     user_data = user_in.model_dump(exclude_unset=True)
     current_user.sqlmodel_update(user_data)
     session.add(current_user)
@@ -150,6 +150,7 @@ def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
     session.exec(
         update(Item)
         .where(col(Item.owner_id) == current_user.id)
+        .where(col(Item.deleted_at).is_(None))
         .values(deleted_at=now)
     )
     current_user.deleted_at = now
@@ -214,12 +215,12 @@ def update_user(
             status_code=404,
             detail="The user with this id does not exist in the system",
         )
-    if user_in.email:
-        existing_user = crud.get_user_by_email(session=session, email=user_in.email)
-        if existing_user and existing_user.id != user_id:
-            raise HTTPException(
-                status_code=409, detail="User with this email already exists"
-            )
+    if user_in.email and crud.email_is_taken(
+        session=session, email=user_in.email, exclude_user_id=user_id
+    ):
+        raise HTTPException(
+            status_code=409, detail="User with this email already exists"
+        )
 
     db_user = crud.update_user(session=session, db_user=db_user, user_in=user_in)
     return db_user
@@ -241,7 +242,10 @@ def delete_user(
         )
     now = get_datetime_utc()
     statement = (
-        update(Item).where(col(Item.owner_id) == user_id).values(deleted_at=now)
+        update(Item)
+        .where(col(Item.owner_id) == user_id)
+        .where(col(Item.deleted_at).is_(None))
+        .values(deleted_at=now)
     )
     session.exec(statement)
     user.deleted_at = now

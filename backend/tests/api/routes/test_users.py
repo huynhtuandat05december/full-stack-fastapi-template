@@ -7,8 +7,8 @@ from sqlmodel import Session, select
 from app import crud
 from app.core.config import settings
 from app.core.security import verify_password
-from app.models import Item, User, UserCreate
-from tests.utils.user import create_random_user
+from app.models import Item, User, UserCreate, get_datetime_utc
+from tests.utils.user import create_random_user, user_authentication_headers
 from tests.utils.utils import random_email, random_lower_string
 
 
@@ -297,6 +297,40 @@ def test_update_user_me_email_exists(
     assert r.json()["detail"] == "User with this email already exists"
 
 
+def test_update_user_me_email_exists_soft_deleted(
+    client: TestClient, db: Session
+) -> None:
+    # A soft-deleted user still occupies its email (unique constraint remains),
+    # so updating another user's email to it must return 409, not a 500 from an
+    # unhandled IntegrityError.
+    taken_email = random_email()
+    soft_deleted = crud.create_user(
+        session=db,
+        user_create=UserCreate(email=taken_email, password=random_lower_string()),
+    )
+    soft_deleted.deleted_at = get_datetime_utc()
+    db.add(soft_deleted)
+    db.commit()
+
+    actor_email = random_email()
+    actor_password = random_lower_string()
+    crud.create_user(
+        session=db,
+        user_create=UserCreate(email=actor_email, password=actor_password),
+    )
+    headers = user_authentication_headers(
+        client=client, email=actor_email, password=actor_password
+    )
+
+    r = client.patch(
+        f"{settings.API_V1_STR}/users/me",
+        headers=headers,
+        json={"email": taken_email},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"] == "User with this email already exists"
+
+
 def test_update_password_me_same_password_error(
     client: TestClient, superuser_token_headers: dict[str, str]
 ) -> None:
@@ -412,6 +446,34 @@ def test_update_user_email_exists(
         f"{settings.API_V1_STR}/users/{user.id}",
         headers=superuser_token_headers,
         json=data,
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"] == "User with this email already exists"
+
+
+def test_update_user_email_exists_soft_deleted(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    # Superuser update path: colliding with a soft-deleted user's email must
+    # return 409 instead of a 500 from an unhandled IntegrityError.
+    taken_email = random_email()
+    soft_deleted = crud.create_user(
+        session=db,
+        user_create=UserCreate(email=taken_email, password=random_lower_string()),
+    )
+    soft_deleted.deleted_at = get_datetime_utc()
+    db.add(soft_deleted)
+    db.commit()
+
+    target = crud.create_user(
+        session=db,
+        user_create=UserCreate(email=random_email(), password=random_lower_string()),
+    )
+
+    r = client.patch(
+        f"{settings.API_V1_STR}/users/{target.id}",
+        headers=superuser_token_headers,
+        json={"email": taken_email},
     )
     assert r.status_code == 409
     assert r.json()["detail"] == "User with this email already exists"
