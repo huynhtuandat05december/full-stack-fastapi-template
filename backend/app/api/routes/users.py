@@ -2,7 +2,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import col, delete, func, select
+from sqlmodel import col, func, select, update
 
 from app import crud
 from app.api.deps import (
@@ -23,6 +23,7 @@ from app.models import (
     UsersPublic,
     UserUpdate,
     UserUpdateMe,
+    get_datetime_utc,
 )
 from app.utils import generate_new_account_email, send_email
 
@@ -39,11 +40,17 @@ def read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:
     Retrieve users.
     """
 
-    count_statement = select(func.count()).select_from(User)
+    count_statement = (
+        select(func.count()).select_from(User).where(col(User.deleted_at).is_(None))
+    )
     count = session.exec(count_statement).one()
 
     statement = (
-        select(User).order_by(col(User.created_at).desc()).offset(skip).limit(limit)
+        select(User)
+        .where(col(User.deleted_at).is_(None))
+        .order_by(col(User.created_at).desc())
+        .offset(skip)
+        .limit(limit)
     )
     users = session.exec(statement).all()
 
@@ -138,7 +145,18 @@ def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
         raise HTTPException(
             status_code=403, detail="Super users are not allowed to delete themselves"
         )
-    session.delete(current_user)
+    now = get_datetime_utc()
+    statement = (
+        update(Item)
+        .where(
+            col(Item.owner_id) == current_user.id,
+            col(Item.deleted_at).is_(None),
+        )
+        .values(deleted_at=now)
+    )
+    session.exec(statement)
+    current_user.deleted_at = now
+    session.add(current_user)
     session.commit()
     return Message(message="User deleted successfully")
 
@@ -174,7 +192,7 @@ def read_user_by_id(
             status_code=403,
             detail="The user doesn't have enough privileges",
         )
-    if user is None:
+    if user is None or user.deleted_at is not None:
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
@@ -195,7 +213,7 @@ def update_user(
     """
 
     db_user = session.get(User, user_id)
-    if not db_user:
+    if not db_user or db_user.deleted_at is not None:
         raise HTTPException(
             status_code=404,
             detail="The user with this id does not exist in the system",
@@ -219,14 +237,23 @@ def delete_user(
     Delete a user.
     """
     user = session.get(User, user_id)
-    if not user:
+    if not user or user.deleted_at is not None:
         raise HTTPException(status_code=404, detail="User not found")
     if user == current_user:
         raise HTTPException(
             status_code=403, detail="Super users are not allowed to delete themselves"
         )
-    statement = delete(Item).where(col(Item.owner_id) == user_id)
+    now = get_datetime_utc()
+    statement = (
+        update(Item)
+        .where(
+            col(Item.owner_id) == user_id,
+            col(Item.deleted_at).is_(None),
+        )
+        .values(deleted_at=now)
+    )
     session.exec(statement)
-    session.delete(user)
+    user.deleted_at = now
+    session.add(user)
     session.commit()
     return Message(message="User deleted successfully")
