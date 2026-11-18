@@ -4,7 +4,7 @@ from sqlmodel import Session
 
 from app import crud
 from app.core.security import verify_password
-from app.models import User, UserCreate, UserUpdate
+from app.models import User, UserCreate, UserUpdate, get_datetime_utc
 from tests.utils.utils import random_email, random_lower_string
 
 
@@ -32,6 +32,21 @@ def test_not_authenticate_user(db: Session) -> None:
     password = random_lower_string()
     user = crud.authenticate(session=db, email=email, password=password)
     assert user is None
+
+
+def test_soft_deleted_user_not_found_by_email(db: Session) -> None:
+    email = random_email()
+    password = random_lower_string()
+    user_in = UserCreate(email=email, password=password)
+    user = crud.create_user(session=db, user_create=user_in)
+
+    # Soft delete the user.
+    user.deleted_at = get_datetime_utc()
+    db.add(user)
+    db.commit()
+
+    assert crud.get_user_by_email(session=db, email=email) is None
+    assert crud.authenticate(session=db, email=email, password=password) is None
 
 
 def test_check_if_user_is_active(db: Session) -> None:

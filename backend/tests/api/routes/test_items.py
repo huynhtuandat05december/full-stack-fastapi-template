@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from app.core.config import settings
+from app.models import Item
 from tests.utils.item import create_random_item
 
 
@@ -137,6 +138,39 @@ def test_delete_item(
     assert response.status_code == 200
     content = response.json()
     assert content["message"] == "Item deleted successfully"
+    # Soft delete: the row must still exist with deleted_at set, not be removed.
+    db.expire_all()
+    db_item = db.get(Item, item.id)
+    assert db_item is not None
+    assert db_item.deleted_at is not None
+
+
+def test_soft_deleted_item_not_returned(
+    client: TestClient, superuser_token_headers: dict[str, str], db: Session
+) -> None:
+    item = create_random_item(db)
+    delete_response = client.delete(
+        f"{settings.API_V1_STR}/items/{item.id}",
+        headers=superuser_token_headers,
+    )
+    assert delete_response.status_code == 200
+
+    # A soft-deleted item must 404 on get-by-id.
+    get_response = client.get(
+        f"{settings.API_V1_STR}/items/{item.id}",
+        headers=superuser_token_headers,
+    )
+    assert get_response.status_code == 404
+    assert get_response.json()["detail"] == "Item not found"
+
+    # ...and must be absent from the list endpoint.
+    list_response = client.get(
+        f"{settings.API_V1_STR}/items/",
+        headers=superuser_token_headers,
+    )
+    assert list_response.status_code == 200
+    returned_ids = [row["id"] for row in list_response.json()["data"]]
+    assert str(item.id) not in returned_ids
 
 
 def test_delete_item_not_found(
